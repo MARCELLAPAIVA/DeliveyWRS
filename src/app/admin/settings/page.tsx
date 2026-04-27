@@ -1,125 +1,104 @@
-'use client';
-import { useEffect, useState } from 'react';
-import Image from 'next/image';
-import { Upload } from 'lucide-react';
-import { supabase, getImageUrl } from '@/lib/supabase';
-import { Settings } from '@/lib/types';
-import { Spinner } from '@/components/ui/Spinner';
-import toast from 'react-hot-toast';
+'use client'
+
+import { useEffect, useState } from 'react'
+import { supabase } from '@/lib/supabase'
+import type { Settings } from '@/lib/database.types'
+import { Upload } from 'lucide-react'
+import toast from 'react-hot-toast'
 
 export default function AdminSettingsPage() {
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [logoFile, setLogoFile] = useState<File | null>(null);
-  const [bannerFile, setBannerFile] = useState<File | null>(null);
-  const [logoPreview, setLogoPreview] = useState<string | null>(null);
-  const [bannerPreview, setBannerPreview] = useState<string | null>(null);
-  const [form, setForm] = useState({ store_name: '', whatsapp: '' });
+  const [settings, setSettings] = useState<Settings | null>(null)
+  const [storeName, setStoreName] = useState('')
+  const [whatsapp, setWhatsapp] = useState('')
+  const [logoFile, setLogoFile] = useState<File | null>(null)
+  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    supabase.from('settings').select('*').single().then(({ data }) => {
+    supabase.from('settings').select('*').limit(1).single().then(({ data }) => {
       if (data) {
-        setSettings(data as Settings);
-        setForm({ store_name: data.store_name, whatsapp: data.whatsapp });
-        if (data.logo_url) setLogoPreview(data.logo_url);
-        if (data.banner_url) setBannerPreview(data.banner_url);
+        setSettings(data)
+        setStoreName(data.store_name)
+        setWhatsapp(data.whatsapp)
       }
-      setLoading(false);
-    });
-  }, []);
+    })
+  }, [])
 
-  async function uploadImage(file: File, path: string): Promise<string> {
-    await supabase.storage.from('images').upload(path, file, { upsert: true });
-    return getImageUrl('images', path);
-  }
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!settings) return
 
-  async function handleSave(e: React.FormEvent) {
-    e.preventDefault();
-    if (!settings) return;
-    setSaving(true);
-
-    const update: Partial<Settings> = { store_name: form.store_name, whatsapp: form.whatsapp };
+    setLoading(true)
+    let logoUrl = settings.logo_url
 
     if (logoFile) {
-      update.logo_url = await uploadImage(logoFile, `settings/logo.${logoFile.name.split('.').pop()}`);
-    }
-    if (bannerFile) {
-      update.banner_url = await uploadImage(bannerFile, `settings/banner.${bannerFile.name.split('.').pop()}`);
+      const ext = logoFile.name.split('.').pop()
+      const fileName = `logo-${Date.now()}.${ext}`
+      const { error: uploadErr } = await supabase.storage.from('products').upload(fileName, logoFile)
+      if (!uploadErr) {
+        const { data } = supabase.storage.from('products').getPublicUrl(fileName)
+        logoUrl = data.publicUrl
+      }
     }
 
-    await supabase.from('settings').update(update).eq('id', settings.id);
-    toast.success('Configurações salvas!');
-    setSaving(false);
+    const { error } = await supabase
+      .from('settings')
+      .update({ store_name: storeName, whatsapp, logo_url: logoUrl })
+      .eq('id', settings.id)
+
+    setLoading(false)
+    if (error) {
+      toast.error('Erro ao salvar configuracoes')
+    } else {
+      toast.success('Configuracoes salvas!')
+    }
   }
 
-  if (loading) return <div className="flex justify-center py-16"><Spinner className="text-primary-500 w-8 h-8" /></div>;
+  if (!settings) {
+    return (
+      <div className="flex justify-center py-20">
+        <div className="w-8 h-8 border-4 border-orange-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    )
+  }
 
   return (
-    <div className="max-w-2xl">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Configurações</h1>
-        <p className="text-gray-400 text-sm mt-0.5">Personalize sua loja</p>
-      </div>
+    <div>
+      <h2 className="text-xl font-bold text-gray-900 mb-6">Configuracoes</h2>
 
-      <form onSubmit={handleSave} className="space-y-5">
-        <div className="card space-y-5">
-          {/* Logo */}
-          <div>
-            <label className="label">Logo da Loja</label>
-            <div className="flex items-center gap-4">
-              <div className="w-20 h-20 rounded-2xl overflow-hidden bg-gray-100 flex items-center justify-center flex-shrink-0">
-                {logoPreview ? (
-                  <img src={logoPreview} alt="logo" className="w-full h-full object-contain" />
-                ) : (
-                  <div className="text-3xl font-bold text-primary-500">D</div>
-                )}
-              </div>
-              <label className="btn-secondary flex items-center gap-2 text-sm cursor-pointer">
-                <Upload size={16} /> Trocar Logo
-                <input type="file" accept="image/*" className="hidden" onChange={(e) => {
-                  const f = e.target.files?.[0]; if (!f) return;
-                  setLogoFile(f); setLogoPreview(URL.createObjectURL(f));
-                }} />
-              </label>
-            </div>
-          </div>
-
-          {/* Banner */}
-          <div>
-            <label className="label">Banner da Loja (opcional)</label>
-            <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-200 rounded-xl cursor-pointer hover:border-primary-400 transition-colors bg-gray-50 overflow-hidden">
-              {bannerPreview ? (
-                <img src={bannerPreview} alt="banner" className="w-full h-full object-cover" />
-              ) : (
-                <div className="flex flex-col items-center gap-2 text-gray-400">
-                  <Upload size={22} />
-                  <span className="text-sm">Clique para enviar o banner</span>
-                </div>
-              )}
-              <input type="file" accept="image/*" className="hidden" onChange={(e) => {
-                const f = e.target.files?.[0]; if (!f) return;
-                setBannerFile(f); setBannerPreview(URL.createObjectURL(f));
-              }} />
-            </label>
-          </div>
-
-          <div>
-            <label className="label">Nome da Loja</label>
-            <input className="input" value={form.store_name} onChange={(e) => setForm({ ...form, store_name: e.target.value })} required />
-          </div>
-
-          <div>
-            <label className="label">WhatsApp (com DDD e código do país)</label>
-            <input className="input" placeholder="5521985529198" value={form.whatsapp} onChange={(e) => setForm({ ...form, whatsapp: e.target.value })} required />
-            <p className="text-xs text-gray-400 mt-1">Exemplo: 5521985529198 (sem espaços ou traços)</p>
-          </div>
+      <form onSubmit={handleSubmit} className="bg-white rounded-xl border border-gray-100 p-6 max-w-lg space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Nome da Loja</label>
+          <input type="text" required value={storeName} onChange={e => setStoreName(e.target.value)}
+            className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm" />
         </div>
 
-        <button type="submit" disabled={saving} className="btn-primary w-full flex items-center justify-center gap-2">
-          {saving ? <Spinner className="text-white w-5 h-5" /> : '💾 Salvar Configurações'}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">WhatsApp</label>
+          <input type="text" required value={whatsapp} onChange={e => setWhatsapp(e.target.value)}
+            className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm"
+            placeholder="5521999999999" />
+          <p className="text-xs text-gray-400 mt-1">Formato: codigo do pais + DDD + numero (sem espacos)</p>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Logo da Loja</label>
+          {settings.logo_url && (
+            <div className="mb-2">
+              <img src={settings.logo_url} alt="Logo" className="w-20 h-20 object-contain rounded-xl border" />
+            </div>
+          )}
+          <label className="flex items-center gap-2 px-4 py-3 rounded-xl border border-gray-200 text-sm cursor-pointer hover:bg-gray-50">
+            <Upload className="w-4 h-4 text-gray-400" />
+            {logoFile ? logoFile.name : 'Alterar logo'}
+            <input type="file" accept="image/*" className="hidden" onChange={e => setLogoFile(e.target.files?.[0] ?? null)} />
+          </label>
+        </div>
+
+        <button type="submit" disabled={loading}
+          className="w-full bg-orange-500 text-white py-3 rounded-xl font-semibold hover:bg-orange-600 transition-colors disabled:opacity-50">
+          {loading ? 'Salvando...' : 'Salvar Configuracoes'}
         </button>
       </form>
     </div>
-  );
+  )
 }

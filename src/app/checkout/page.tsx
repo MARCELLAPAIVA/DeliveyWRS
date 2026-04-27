@@ -1,250 +1,244 @@
-'use client';
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import Link from 'next/link';
-import { ArrowLeft, CheckCircle, MessageCircle } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
-import { useAuth } from '@/contexts/AuthContext';
-import { useCart } from '@/contexts/CartContext';
-import { DeliveryZone } from '@/lib/types';
-import { Navbar } from '@/components/store/Navbar';
-import { Spinner } from '@/components/ui/Spinner';
-import { formatCurrency, PAYMENT_LABELS, buildWhatsAppMessage } from '@/lib/utils';
-import toast from 'react-hot-toast';
+'use client'
 
-type PaymentMethod = 'cash' | 'card' | 'pix';
+import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
+import { useCart } from '@/contexts/CartContext'
+import { useAuth } from '@/contexts/AuthContext'
+import { supabase } from '@/lib/supabase'
+import { formatCurrency } from '@/lib/utils'
+import StoreHeader from '@/components/StoreHeader'
+import type { DeliveryZone } from '@/lib/database.types'
+import toast from 'react-hot-toast'
 
 export default function CheckoutPage() {
-  const { user, profile, loading } = useAuth();
-  const router = useRouter();
-  const { items, subtotal, clearCart } = useCart();
-  const [zones, setZones] = useState<DeliveryZone[]>([]);
-  const [selectedZone, setSelectedZone] = useState<DeliveryZone | null>(null);
-  const [payment, setPayment] = useState<PaymentMethod>('pix');
-  const [changeFor, setChangeFor] = useState('');
-  const [notes, setNotes] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [orderId, setOrderId] = useState<string | null>(null);
-  const [whatsappMsg, setWhatsappMsg] = useState('');
+  const { items, subtotal, clearCart } = useCart()
+  const { user, profile } = useAuth()
+  const router = useRouter()
+
+  const [zones, setZones] = useState<DeliveryZone[]>([])
+  const [selectedZone, setSelectedZone] = useState<string>('')
+  const [paymentMethod, setPaymentMethod] = useState<'money' | 'card' | 'pix'>('pix')
+  const [needsChange, setNeedsChange] = useState(false)
+  const [changeFor, setChangeFor] = useState('')
+  const [notes, setNotes] = useState('')
+  const [address, setAddress] = useState('')
+  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    if (!loading && !user) router.push('/login');
-    if (!loading && items.length === 0 && !orderId) router.push('/');
-  }, [user, loading, items, router, orderId]);
+    if (!user) {
+      router.push('/login')
+      return
+    }
+    if (items.length === 0) {
+      router.push('/cart')
+      return
+    }
+    if (profile) {
+      setAddress(profile.address)
+      setSelectedZone(profile.neighborhood)
+    }
+    supabase.from('delivery_zones').select('*').eq('active', true).order('neighborhood').then(({ data }) => {
+      setZones(data ?? [])
+    })
+  }, [user, profile, items.length, router])
 
-  useEffect(() => {
-    supabase.from('delivery_zones').select('*').eq('active', true).order('neighborhood').then(({ data }) => setZones(data ?? []));
-  }, []);
+  const deliveryFee = zones.find(z => z.neighborhood === selectedZone)?.fee ?? 0
+  const total = subtotal + deliveryFee
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!selectedZone) { toast.error('Selecione o bairro de entrega'); return; }
-    if (!profile) { toast.error('Perfil não encontrado'); return; }
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!user || !profile) return
 
-    setSubmitting(true);
-    const deliveryFee = selectedZone.fee;
-    const total = subtotal + deliveryFee;
-
-    const { data: order, error } = await supabase.from('orders').insert({
-      user_id: user!.id,
-      status: 'new',
-      subtotal,
-      delivery_fee: deliveryFee,
-      total,
-      payment_method: payment,
-      change_for: payment === 'cash' && changeFor ? parseFloat(changeFor) : null,
-      notes: notes || null,
-      address: profile.address,
-      neighborhood: selectedZone.neighborhood,
-    }).select().single();
-
-    if (error || !order) {
-      toast.error('Erro ao finalizar pedido');
-      setSubmitting(false);
-      return;
+    if (!selectedZone) {
+      toast.error('Selecione o bairro de entrega')
+      return
     }
 
-    await supabase.from('order_items').insert(
-      items.map((i) => ({
-        order_id: order.id,
-        product_id: i.product.id,
-        quantity: i.quantity,
-        unit_price: i.product.price,
-        subtotal: i.product.price * i.quantity,
-      }))
-    );
+    setLoading(true)
+    const { data: order, error } = await supabase
+      .from('orders')
+      .insert({
+        user_id: user.id,
+        customer_name: profile.full_name,
+        customer_phone: profile.phone,
+        customer_address: address || profile.address,
+        customer_neighborhood: selectedZone,
+        payment_method: paymentMethod,
+        needs_change: needsChange,
+        change_for: needsChange ? parseFloat(changeFor) || 0 : 0,
+        notes,
+        subtotal,
+        delivery_fee: deliveryFee,
+        total,
+      })
+      .select()
+      .single()
 
-    const msg = buildWhatsAppMessage({
-      id: order.id,
-      items: items.map((i) => ({ name: i.product.name, quantity: i.quantity, price: i.product.price })),
-      subtotal,
-      deliveryFee,
-      total,
-      payment,
-      changeFor: payment === 'cash' && changeFor ? parseFloat(changeFor) : null,
-      address: profile.address,
-      neighborhood: selectedZone.neighborhood,
-      notes,
-    });
+    if (error || !order) {
+      setLoading(false)
+      toast.error('Erro ao criar pedido. Tente novamente.')
+      return
+    }
 
-    setWhatsappMsg(msg);
-    setOrderId(order.id);
-    clearCart();
-    setSubmitting(false);
+    const orderItems = items.map(item => ({
+      order_id: order.id,
+      product_id: item.product.id,
+      product_name: item.product.name,
+      quantity: item.quantity,
+      unit_price: item.product.price,
+      total_price: item.product.price * item.quantity,
+    }))
+
+    await supabase.from('order_items').insert(orderItems)
+
+    clearCart()
+    setLoading(false)
+
+    const orderSummary = buildOrderSummary(order.id)
+    const params = new URLSearchParams({ orderId: order.id, summary: orderSummary })
+    router.push(`/success?${params.toString()}`)
   }
 
-  const deliveryFee = selectedZone?.fee ?? 0;
-  const total = subtotal + deliveryFee;
-  const whatsNumber = process.env.NEXT_PUBLIC_WHATSAPP_NUMBER ?? '5521985529198';
-
-  if (orderId) {
-    return (
-      <div className="min-h-screen bg-gray-50">
-        <Navbar />
-        <div className="max-w-lg mx-auto px-4 py-16 text-center">
-          <div className="card">
-            <div className="flex justify-center mb-4">
-              <CheckCircle size={64} className="text-green-500" />
-            </div>
-            <h2 className="text-2xl font-bold text-gray-900 mb-2">Pedido Realizado! ✅</h2>
-            <p className="text-gray-500 text-sm mb-2">
-              Pedido <span className="font-semibold">#{orderId.slice(0, 8).toUpperCase()}</span>
-            </p>
-            <p className="text-gray-600 text-sm mb-6">
-              Agora envie a confirmação do seu pedido para nosso WhatsApp para agilizar o atendimento.
-            </p>
-            <a
-              href={`https://wa.me/${whatsNumber}?text=${whatsappMsg}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn-primary w-full flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 mb-3"
-            >
-              <MessageCircle size={20} />
-              Confirmar pelo WhatsApp
-            </a>
-            <Link href="/orders" className="btn-secondary w-full flex items-center justify-center">
-              Ver Meus Pedidos
-            </Link>
-          </div>
-        </div>
-      </div>
-    );
+  const buildOrderSummary = (orderId: string) => {
+    const paymentLabels: Record<string, string> = { money: 'Dinheiro', card: 'Cartao', pix: 'PIX' }
+    let text = `*NOVO PEDIDO* #${orderId.slice(0, 8)}\n\n`
+    text += `*Cliente:* ${profile?.full_name}\n`
+    text += `*Telefone:* ${profile?.phone}\n`
+    text += `*Endereco:* ${address || profile?.address}\n`
+    text += `*Bairro:* ${selectedZone}\n\n`
+    text += `*ITENS:*\n`
+    items.forEach(item => {
+      text += `- ${item.quantity}x ${item.product.name} = ${formatCurrency(item.product.price * item.quantity)}\n`
+    })
+    text += `\n*Subtotal:* ${formatCurrency(subtotal)}\n`
+    text += `*Taxa de entrega:* ${formatCurrency(deliveryFee)}\n`
+    text += `*TOTAL:* ${formatCurrency(total)}\n\n`
+    text += `*Pagamento:* ${paymentLabels[paymentMethod]}\n`
+    if (needsChange && changeFor) text += `*Troco para:* ${formatCurrency(parseFloat(changeFor))}\n`
+    if (notes) text += `*Obs:* ${notes}\n`
+    return text
   }
 
-  if (!user || !profile) return null;
+  if (!user || items.length === 0) return null
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <Navbar />
-      <div className="max-w-lg mx-auto px-4 py-6">
-        <div className="flex items-center gap-3 mb-6">
-          <Link href="/cart" className="w-9 h-9 bg-white rounded-xl border border-gray-200 flex items-center justify-center hover:bg-gray-50">
-            <ArrowLeft size={18} />
-          </Link>
-          <h1 className="text-xl font-bold text-gray-900">Finalizar Pedido</h1>
-        </div>
+      <StoreHeader />
 
-        <form onSubmit={handleSubmit} className="space-y-5">
-          {/* Endereço */}
-          <div className="card">
-            <h3 className="font-semibold text-gray-800 mb-3">📍 Endereço de Entrega</h3>
-            <div className="bg-gray-50 rounded-xl p-3 mb-3">
-              <p className="text-sm text-gray-700">{profile.address}</p>
-              <p className="text-xs text-gray-400 mt-0.5">{profile.city}</p>
-            </div>
-            <label className="label">Selecione seu bairro</label>
-            <select
-              className="input"
-              value={selectedZone?.id ?? ''}
-              onChange={(e) => setSelectedZone(zones.find((z) => z.id === e.target.value) ?? null)}
+      <div className="max-w-2xl mx-auto px-4 py-6">
+        <h1 className="text-2xl font-bold text-gray-900 mb-6">Checkout</h1>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Order summary */}
+          <div className="bg-white rounded-xl border border-gray-100 p-4">
+            <h2 className="font-bold text-gray-900 mb-3">Resumo do Pedido</h2>
+            {items.map(item => (
+              <div key={item.product.id} className="flex justify-between text-sm py-1">
+                <span className="text-gray-700">{item.quantity}x {item.product.name}</span>
+                <span className="font-medium">{formatCurrency(item.product.price * item.quantity)}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Address */}
+          <div className="bg-white rounded-xl border border-gray-100 p-4">
+            <h2 className="font-bold text-gray-900 mb-3">Endereco de Entrega</h2>
+            <input
+              type="text"
+              value={address}
+              onChange={e => setAddress(e.target.value)}
               required
+              className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm mb-3"
+              placeholder="Rua, numero, complemento"
+            />
+            <label className="block text-sm font-medium text-gray-700 mb-1">Bairro</label>
+            <select
+              value={selectedZone}
+              onChange={e => setSelectedZone(e.target.value)}
+              required
+              className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm bg-white"
             >
-              <option value="">-- Selecione o bairro --</option>
-              {zones.map((z) => (
-                <option key={z.id} value={z.id}>
-                  {z.neighborhood} — {formatCurrency(z.fee)}
+              <option value="">Selecione o bairro</option>
+              {zones.map(zone => (
+                <option key={zone.id} value={zone.neighborhood}>
+                  {zone.neighborhood} - {formatCurrency(zone.fee)}
                 </option>
               ))}
             </select>
           </div>
 
-          {/* Pagamento */}
-          <div className="card">
-            <h3 className="font-semibold text-gray-800 mb-3">💳 Forma de Pagamento</h3>
+          {/* Payment */}
+          <div className="bg-white rounded-xl border border-gray-100 p-4">
+            <h2 className="font-bold text-gray-900 mb-3">Forma de Pagamento</h2>
             <div className="grid grid-cols-3 gap-2">
-              {(['pix', 'card', 'cash'] as PaymentMethod[]).map((m) => (
+              {(['pix', 'card', 'money'] as const).map(method => (
                 <button
-                  key={m}
+                  key={method}
                   type="button"
-                  onClick={() => setPayment(m)}
-                  className={`py-3 rounded-xl border text-sm font-medium transition-all ${
-                    payment === m
-                      ? 'bg-primary-50 border-primary-500 text-primary-600'
-                      : 'bg-white border-gray-200 text-gray-600'
+                  onClick={() => { setPaymentMethod(method); if (method !== 'money') setNeedsChange(false) }}
+                  className={`py-3 rounded-xl text-sm font-medium transition-colors ${
+                    paymentMethod === method
+                      ? 'bg-orange-500 text-white'
+                      : 'bg-gray-50 text-gray-700 border border-gray-200 hover:bg-gray-100'
                   }`}
                 >
-                  {PAYMENT_LABELS[m]}
+                  {method === 'pix' ? 'PIX' : method === 'card' ? 'Cartao' : 'Dinheiro'}
                 </button>
               ))}
             </div>
-            {payment === 'cash' && (
-              <div className="mt-3">
-                <label className="label">Precisa de troco? (Troco para quanto?)</label>
-                <input
-                  type="number"
-                  className="input"
-                  placeholder="Ex: 50.00"
-                  value={changeFor}
-                  onChange={(e) => setChangeFor(e.target.value)}
-                  min="0"
-                  step="0.01"
-                />
+
+            {paymentMethod === 'money' && (
+              <div className="mt-3 space-y-2">
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={needsChange} onChange={e => setNeedsChange(e.target.checked)}
+                    className="rounded accent-orange-500" />
+                  Precisa de troco?
+                </label>
+                {needsChange && (
+                  <input type="number" value={changeFor} onChange={e => setChangeFor(e.target.value)}
+                    placeholder="Troco para quanto?" className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm" />
+                )}
               </div>
             )}
           </div>
 
-          {/* Observações */}
-          <div className="card">
-            <h3 className="font-semibold text-gray-800 mb-3">📝 Observações (opcional)</h3>
+          {/* Notes */}
+          <div className="bg-white rounded-xl border border-gray-100 p-4">
+            <h2 className="font-bold text-gray-900 mb-3">Observacoes</h2>
             <textarea
-              className="input min-h-[80px] resize-none"
-              placeholder="Ex: sem cebola, apartamento 302..."
               value={notes}
-              onChange={(e) => setNotes(e.target.value)}
+              onChange={e => setNotes(e.target.value)}
+              rows={3}
+              className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm resize-none"
+              placeholder="Alguma observacao sobre o pedido?"
             />
           </div>
 
-          {/* Resumo */}
-          <div className="card">
-            <h3 className="font-semibold text-gray-800 mb-3">🧾 Resumo do Pedido</h3>
-            <div className="space-y-2 mb-3">
-              {items.map(({ product, quantity }) => (
-                <div key={product.id} className="flex justify-between text-sm">
-                  <span className="text-gray-600">{quantity}x {product.name}</span>
-                  <span className="font-medium">{formatCurrency(product.price * quantity)}</span>
-                </div>
-              ))}
+          {/* Totals */}
+          <div className="bg-white rounded-xl border border-gray-100 p-4 space-y-2">
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-500">Subtotal</span>
+              <span>{formatCurrency(subtotal)}</span>
             </div>
-            <div className="border-t border-gray-100 pt-3 space-y-1">
-              <div className="flex justify-between text-sm text-gray-500">
-                <span>Subtotal</span><span>{formatCurrency(subtotal)}</span>
-              </div>
-              <div className="flex justify-between text-sm text-gray-500">
-                <span>Entrega ({selectedZone?.neighborhood ?? '--'})</span>
-                <span>{selectedZone ? formatCurrency(deliveryFee) : '--'}</span>
-              </div>
-              <div className="flex justify-between font-bold text-gray-900 text-base mt-2">
-                <span>Total</span>
-                <span className="text-primary-500">{formatCurrency(total)}</span>
-              </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-500">Taxa de entrega</span>
+              <span>{formatCurrency(deliveryFee)}</span>
+            </div>
+            <div className="flex justify-between text-lg font-bold pt-2 border-t">
+              <span>Total</span>
+              <span className="text-orange-500">{formatCurrency(total)}</span>
             </div>
           </div>
 
-          <button type="submit" disabled={submitting} className="btn-primary w-full flex items-center justify-center gap-2 text-base">
-            {submitting ? <Spinner className="text-white w-5 h-5" /> : '✅ Confirmar Pedido'}
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-orange-500 text-white py-4 rounded-xl font-bold text-lg hover:bg-orange-600 transition-colors disabled:opacity-50"
+          >
+            {loading ? 'Finalizando...' : 'Finalizar Pedido'}
           </button>
         </form>
       </div>
     </div>
-  );
+  )
 }

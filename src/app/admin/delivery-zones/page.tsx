@@ -1,146 +1,113 @@
-'use client';
-import { useEffect, useState } from 'react';
-import { Plus, Pencil, Trash2, Check, X } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
-import { DeliveryZone } from '@/lib/types';
-import { formatCurrency } from '@/lib/utils';
-import { Spinner } from '@/components/ui/Spinner';
-import toast from 'react-hot-toast';
+'use client'
 
-export default function DeliveryZonesPage() {
-  const [zones, setZones] = useState<DeliveryZone[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ neighborhood: '', fee: '' });
-  const [newForm, setNewForm] = useState({ neighborhood: '', fee: '' });
-  const [adding, setAdding] = useState(false);
-  const [saving, setSaving] = useState(false);
+import { useEffect, useState, useCallback } from 'react'
+import { supabase } from '@/lib/supabase'
+import type { DeliveryZone } from '@/lib/database.types'
+import { formatCurrency } from '@/lib/utils'
+import { Plus, Pencil, Trash2, X } from 'lucide-react'
+import toast from 'react-hot-toast'
 
-  async function load() {
-    const { data } = await supabase.from('delivery_zones').select('*').order('neighborhood');
-    setZones(data ?? []);
-    setLoading(false);
+export default function AdminDeliveryZonesPage() {
+  const [zones, setZones] = useState<DeliveryZone[]>([])
+  const [showForm, setShowForm] = useState(false)
+  const [editing, setEditing] = useState<DeliveryZone | null>(null)
+  const [neighborhood, setNeighborhood] = useState('')
+  const [fee, setFee] = useState('')
+
+  const fetchZones = useCallback(async () => {
+    const { data } = await supabase.from('delivery_zones').select('*').order('neighborhood')
+    setZones(data ?? [])
+  }, [])
+
+  useEffect(() => { fetchZones() }, [fetchZones])
+
+  const resetForm = () => {
+    setNeighborhood(''); setFee(''); setEditing(null); setShowForm(false)
   }
 
-  useEffect(() => { load(); }, []);
-
-  async function addZone() {
-    if (!newForm.neighborhood.trim() || !newForm.fee) return;
-    setSaving(true);
-    await supabase.from('delivery_zones').insert({ neighborhood: newForm.neighborhood, fee: parseFloat(newForm.fee), active: true });
-    toast.success('Bairro adicionado!');
-    setNewForm({ neighborhood: '', fee: '' });
-    setAdding(false);
-    setSaving(false);
-    load();
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const payload = { neighborhood, fee: parseFloat(fee) || 0 }
+    if (editing) {
+      const { error } = await supabase.from('delivery_zones').update(payload).eq('id', editing.id)
+      if (error) { toast.error('Erro ao atualizar'); return }
+      toast.success('Bairro atualizado!')
+    } else {
+      const { error } = await supabase.from('delivery_zones').insert(payload)
+      if (error) { toast.error('Erro ao criar'); return }
+      toast.success('Bairro cadastrado!')
+    }
+    resetForm()
+    fetchZones()
   }
 
-  async function saveEdit() {
-    if (!editingId) return;
-    setSaving(true);
-    await supabase.from('delivery_zones').update({ neighborhood: editForm.neighborhood, fee: parseFloat(editForm.fee) }).eq('id', editingId);
-    toast.success('Bairro atualizado!');
-    setEditingId(null);
-    setSaving(false);
-    load();
+  const handleEdit = (z: DeliveryZone) => {
+    setEditing(z); setNeighborhood(z.neighborhood); setFee(z.fee.toString()); setShowForm(true)
   }
 
-  async function deleteZone(id: string) {
-    if (!confirm('Excluir este bairro?')) return;
-    await supabase.from('delivery_zones').delete().eq('id', id);
-    toast.success('Bairro removido');
-    load();
-  }
-
-  async function toggleActive(z: DeliveryZone) {
-    await supabase.from('delivery_zones').update({ active: !z.active }).eq('id', z.id);
-    load();
+  const handleDelete = async (id: string) => {
+    if (!confirm('Excluir este bairro?')) return
+    await supabase.from('delivery_zones').delete().eq('id', id)
+    toast.success('Bairro excluido!')
+    fetchZones()
   }
 
   return (
-    <div className="max-w-2xl">
+    <div>
       <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Taxa de Entrega</h1>
-          <p className="text-gray-400 text-sm mt-0.5">Bairros e valores</p>
-        </div>
-        <button onClick={() => setAdding(true)} className="btn-primary flex items-center gap-2 text-sm">
-          <Plus size={16} /> Novo Bairro
+        <h2 className="text-xl font-bold text-gray-900">Taxas de Entrega</h2>
+        <button onClick={() => { resetForm(); setShowForm(true) }}
+          className="flex items-center gap-2 bg-orange-500 text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-orange-600 transition-colors">
+          <Plus className="w-4 h-4" /> Novo Bairro
         </button>
       </div>
 
-      {adding && (
-        <div className="card mb-4 border-2 border-primary-200">
-          <h3 className="font-semibold text-gray-800 mb-3">Novo Bairro</h3>
-          <div className="grid grid-cols-2 gap-3 mb-3">
-            <div>
-              <label className="label">Bairro *</label>
-              <input className="input" placeholder="Ex: Centro" value={newForm.neighborhood} onChange={(e) => setNewForm({ ...newForm, neighborhood: e.target.value })} autoFocus />
-            </div>
-            <div>
-              <label className="label">Taxa (R$) *</label>
-              <input type="number" className="input" placeholder="5.00" min="0" step="0.01" value={newForm.fee} onChange={(e) => setNewForm({ ...newForm, fee: e.target.value })} />
-            </div>
+      {showForm && (
+        <div className="bg-white rounded-xl border border-gray-100 p-5 mb-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-bold">{editing ? 'Editar Bairro' : 'Novo Bairro'}</h3>
+            <button onClick={resetForm}><X className="w-5 h-5 text-gray-400" /></button>
           </div>
-          <div className="flex gap-2">
-            <button onClick={addZone} disabled={saving} className="btn-primary text-sm py-2 flex items-center gap-1.5">
-              {saving ? <Spinner className="text-white w-4 h-4" /> : <><Check size={14} /> Salvar</>}
+          <form onSubmit={handleSubmit} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <input type="text" required value={neighborhood} onChange={e => setNeighborhood(e.target.value)}
+              placeholder="Nome do bairro" className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm" />
+            <input type="number" step="0.01" required value={fee} onChange={e => setFee(e.target.value)}
+              placeholder="Taxa de entrega (R$)" className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm" />
+            <button type="submit" className="sm:col-span-2 bg-orange-500 text-white py-2.5 rounded-xl font-medium hover:bg-orange-600 transition-colors">
+              {editing ? 'Atualizar' : 'Cadastrar'}
             </button>
-            <button onClick={() => setAdding(false)} className="btn-secondary text-sm py-2"><X size={14} /></button>
-          </div>
+          </form>
         </div>
       )}
 
-      {loading ? (
-        <div className="flex justify-center py-16"><Spinner className="text-primary-500 w-8 h-8" /></div>
-      ) : zones.length === 0 ? (
-        <div className="card text-center py-12 text-gray-400">Nenhum bairro cadastrado.</div>
-      ) : (
-        <div className="space-y-2">
-          {zones.map((zone) => (
-            <div key={zone.id} className={`card ${!zone.active ? 'opacity-60' : ''}`}>
-              {editingId === zone.id ? (
-                <div>
-                  <div className="grid grid-cols-2 gap-3 mb-3">
-                    <input className="input" value={editForm.neighborhood} onChange={(e) => setEditForm({ ...editForm, neighborhood: e.target.value })} autoFocus />
-                    <input type="number" className="input" min="0" step="0.01" value={editForm.fee} onChange={(e) => setEditForm({ ...editForm, fee: e.target.value })} />
-                  </div>
+      <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-100 text-left">
+              <th className="px-4 py-3 font-medium text-gray-500">Bairro</th>
+              <th className="px-4 py-3 font-medium text-gray-500">Taxa</th>
+              <th className="px-4 py-3 font-medium text-gray-500">Acoes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {zones.map(z => (
+              <tr key={z.id} className="border-b border-gray-50">
+                <td className="px-4 py-3 font-medium">{z.neighborhood}</td>
+                <td className="px-4 py-3 font-medium text-orange-500">{formatCurrency(z.fee)}</td>
+                <td className="px-4 py-3">
                   <div className="flex gap-2">
-                    <button onClick={saveEdit} disabled={saving} className="btn-primary text-sm py-2 flex items-center gap-1.5">
-                      {saving ? <Spinner className="text-white w-4 h-4" /> : <><Check size={14} /> Salvar</>}
-                    </button>
-                    <button onClick={() => setEditingId(null)} className="btn-secondary text-sm py-2"><X size={14} /></button>
+                    <button onClick={() => handleEdit(z)} className="p-1.5 rounded-lg hover:bg-gray-100"><Pencil className="w-4 h-4 text-gray-500" /></button>
+                    <button onClick={() => handleDelete(z.id)} className="p-1.5 rounded-lg hover:bg-red-50"><Trash2 className="w-4 h-4 text-red-400" /></button>
                   </div>
-                </div>
-              ) : (
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-semibold text-gray-900 text-sm">{zone.neighborhood}</p>
-                    <p className="text-primary-500 font-bold text-sm">{formatCurrency(zone.fee)}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => toggleActive(zone)}
-                      className={`text-xs px-2.5 py-1 rounded-full font-medium transition-colors ${zone.active ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
-                    >
-                      {zone.active ? 'Ativo' : 'Inativo'}
-                    </button>
-                    <button
-                      onClick={() => { setEditingId(zone.id); setEditForm({ neighborhood: zone.neighborhood, fee: String(zone.fee) }); }}
-                      className="w-8 h-8 rounded-lg bg-gray-100 hover:bg-blue-50 text-gray-500 hover:text-blue-500 flex items-center justify-center"
-                    >
-                      <Pencil size={14} />
-                    </button>
-                    <button onClick={() => deleteZone(zone.id)} className="w-8 h-8 rounded-lg bg-gray-100 hover:bg-red-50 text-gray-500 hover:text-red-500 flex items-center justify-center">
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {zones.length === 0 && (
+          <div className="text-center py-10 text-gray-400">Nenhum bairro cadastrado</div>
+        )}
+      </div>
     </div>
-  );
+  )
 }

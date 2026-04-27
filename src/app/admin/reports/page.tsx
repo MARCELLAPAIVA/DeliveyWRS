@@ -1,188 +1,169 @@
-'use client';
-import { useEffect, useState } from 'react';
-import { Download } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
-import { Order } from '@/lib/types';
-import { formatCurrency, formatDate } from '@/lib/utils';
-import { Spinner } from '@/components/ui/Spinner';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import * as XLSX from 'xlsx';
+'use client'
 
-type Period = 'today' | 'week' | 'month' | 'all';
+import { useEffect, useState, useCallback } from 'react'
+import { supabase } from '@/lib/supabase'
+import { formatCurrency, formatDateShort } from '@/lib/utils'
+import { Download, Calendar } from 'lucide-react'
 
-function startOf(period: Period): Date {
-  const d = new Date();
-  if (period === 'today') { d.setHours(0,0,0,0); return d; }
-  if (period === 'week') { d.setDate(d.getDate() - 7); return d; }
-  if (period === 'month') { d.setDate(1); d.setHours(0,0,0,0); return d; }
-  return new Date('2000-01-01');
+interface OrderData {
+  id: string
+  total: number
+  created_at: string
+  status: string
 }
 
-export default function ReportsPage() {
-  const [period, setPeriod] = useState<Period>('month');
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [topProducts, setTopProducts] = useState<{ name: string; qty: number; revenue: number }[]>([]);
-  const [chartData, setChartData] = useState<{ date: string; total: number }[]>([]);
+interface ProductSale {
+  product_name: string
+  total_quantity: number
+  total_revenue: number
+}
 
-  useEffect(() => {
-    async function load() {
-      setLoading(true);
-      const start = startOf(period);
-      const { data } = await supabase
-        .from('orders')
-        .select('*, order_items(quantity, unit_price, subtotal, products(name))')
-        .neq('status', 'cancelled')
-        .gte('created_at', start.toISOString())
-        .order('created_at');
+export default function AdminReportsPage() {
+  const [orders, setOrders] = useState<OrderData[]>([])
+  const [topProducts, setTopProducts] = useState<ProductSale[]>([])
+  const [period, setPeriod] = useState<'day' | 'week' | 'month'>('month')
 
-      const ords = (data as Order[]) ?? [];
-      setOrders(ords);
+  const fetchData = useCallback(async () => {
+    const now = new Date()
+    let since: Date
 
-      // top products
-      const prodMap: Record<string, { qty: number; revenue: number }> = {};
-      ords.forEach((o) => {
-        (o.order_items ?? []).forEach((item: any) => {
-          const name = item.products?.name ?? 'Desconhecido';
-          if (!prodMap[name]) prodMap[name] = { qty: 0, revenue: 0 };
-          prodMap[name].qty += item.quantity;
-          prodMap[name].revenue += item.subtotal;
-        });
-      });
-      const sorted = Object.entries(prodMap)
-        .map(([name, v]) => ({ name, ...v }))
-        .sort((a, b) => b.revenue - a.revenue)
-        .slice(0, 10);
-      setTopProducts(sorted);
-
-      // chart data by day
-      const dayMap: Record<string, number> = {};
-      ords.forEach((o) => {
-        const day = o.created_at.split('T')[0];
-        dayMap[day] = (dayMap[day] ?? 0) + o.total;
-      });
-      setChartData(Object.entries(dayMap).map(([date, total]) => ({ date: date.slice(5), total: Math.round(total * 100) / 100 })));
-
-      setLoading(false);
+    if (period === 'day') {
+      since = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    } else if (period === 'week') {
+      since = new Date(now)
+      since.setDate(since.getDate() - 7)
+    } else {
+      since = new Date(now.getFullYear(), now.getMonth(), 1)
     }
-    load();
-  }, [period]);
 
-  const totalRevenue = orders.reduce((s, o) => s + o.total, 0);
-  const avgTicket = orders.length > 0 ? totalRevenue / orders.length : 0;
+    const { data: ordersData } = await supabase
+      .from('orders')
+      .select('id, total, created_at, status')
+      .gte('created_at', since.toISOString())
+      .order('created_at', { ascending: false })
 
-  function exportExcel() {
-    const rows = orders.map((o) => ({
-      'Pedido': o.id.slice(0,8).toUpperCase(),
-      'Data': formatDate(o.created_at),
-      'Bairro': o.neighborhood,
-      'Pagamento': o.payment_method,
-      'Subtotal': o.subtotal,
-      'Entrega': o.delivery_fee,
-      'Total': o.total,
-      'Status': o.status,
-    }));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Pedidos');
-    XLSX.writeFile(wb, `relatorio_${period}.xlsx`);
+    setOrders(ordersData ?? [])
+
+    const { data: itemsData } = await supabase
+      .from('order_items')
+      .select('product_name, quantity, total_price, order_id')
+
+    if (itemsData) {
+      const orderIds = new Set((ordersData ?? []).map(o => o.id))
+      const filteredItems = itemsData.filter(item => orderIds.has(item.order_id))
+
+      const productMap = new Map<string, { quantity: number; revenue: number }>()
+      filteredItems.forEach(item => {
+        const existing = productMap.get(item.product_name) ?? { quantity: 0, revenue: 0 }
+        existing.quantity += item.quantity
+        existing.revenue += item.total_price
+        productMap.set(item.product_name, existing)
+      })
+
+      const sorted = Array.from(productMap.entries())
+        .map(([prodName, data]) => ({
+          product_name: prodName,
+          total_quantity: data.quantity,
+          total_revenue: data.revenue,
+        }))
+        .sort((a, b) => b.total_quantity - a.total_quantity)
+        .slice(0, 10)
+
+      setTopProducts(sorted)
+    }
+  }, [period])
+
+  useEffect(() => { fetchData() }, [fetchData])
+
+  const totalRevenue = orders.reduce((sum, o) => sum + o.total, 0)
+  const totalOrders = orders.length
+  const doneOrders = orders.filter(o => o.status === 'done').length
+
+  const exportCSV = () => {
+    const headers = ['ID', 'Data', 'Status', 'Total']
+    const rows = orders.map(o => [
+      o.id.slice(0, 8),
+      formatDateShort(o.created_at),
+      o.status,
+      o.total.toFixed(2),
+    ])
+    const csv = [headers, ...rows].map(r => r.join(',')).join('\n')
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `relatorio-vendas-${period}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
   }
-
-  const periods: { value: Period; label: string }[] = [
-    { value: 'today', label: 'Hoje' },
-    { value: 'week', label: 'Últimos 7 dias' },
-    { value: 'month', label: 'Este mês' },
-    { value: 'all', label: 'Todo o período' },
-  ];
 
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Relatórios</h1>
-          <p className="text-gray-400 text-sm mt-0.5">Análise financeira</p>
-        </div>
-        <button onClick={exportExcel} className="btn-secondary flex items-center gap-2 text-sm">
-          <Download size={16} /> Exportar Excel
+        <h2 className="text-xl font-bold text-gray-900">Relatorios</h2>
+        <button onClick={exportCSV}
+          className="flex items-center gap-2 bg-orange-500 text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-orange-600 transition-colors">
+          <Download className="w-4 h-4" /> Exportar CSV
         </button>
       </div>
 
-      {/* Period tabs */}
-      <div className="flex gap-2 mb-6 flex-wrap">
-        {periods.map(({ value, label }) => (
-          <button
-            key={value}
-            onClick={() => setPeriod(value)}
-            className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
-              period === value ? 'bg-primary-500 text-white' : 'bg-white text-gray-600 border border-gray-200'
-            }`}
-          >
-            {label}
+      {/* Period filter */}
+      <div className="flex gap-2 mb-6">
+        {([['day', 'Hoje'], ['week', 'Semana'], ['month', 'Mes']] as const).map(([key, label]) => (
+          <button key={key} onClick={() => setPeriod(key)}
+            className={`px-4 py-2 rounded-xl text-sm font-medium flex items-center gap-1.5 ${
+              period === key ? 'bg-orange-500 text-white' : 'bg-white border border-gray-200 text-gray-700'
+            }`}>
+            <Calendar className="w-4 h-4" /> {label}
           </button>
         ))}
       </div>
 
-      {loading ? (
-        <div className="flex justify-center py-16"><Spinner className="text-primary-500 w-8 h-8" /></div>
-      ) : (
-        <div className="space-y-6">
-          {/* KPIs */}
-          <div className="grid grid-cols-3 gap-4">
-            {[
-              { label: 'Total de Pedidos', value: orders.length },
-              { label: 'Faturamento', value: formatCurrency(totalRevenue) },
-              { label: 'Ticket Médio', value: formatCurrency(avgTicket) },
-            ].map(({ label, value }) => (
-              <div key={label} className="card text-center">
-                <p className="text-2xl font-bold text-gray-900">{value}</p>
-                <p className="text-xs text-gray-400 mt-1">{label}</p>
-              </div>
-            ))}
-          </div>
-
-          {/* Chart */}
-          {chartData.length > 1 && (
-            <div className="card">
-              <h3 className="font-semibold text-gray-800 mb-4">Faturamento por dia</h3>
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `R$${v}`} />
-                  <Tooltip formatter={(v: number) => formatCurrency(v)} />
-                  <Bar dataKey="total" fill="#f97316" radius={[4,4,0,0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-
-          {/* Top products */}
-          {topProducts.length > 0 && (
-            <div className="card">
-              <h3 className="font-semibold text-gray-800 mb-4">🏆 Produtos Mais Vendidos</h3>
-              <div className="space-y-3">
-                {topProducts.map((p, i) => (
-                  <div key={p.name} className="flex items-center gap-3">
-                    <span className="text-sm font-bold text-gray-400 w-5">#{i+1}</span>
-                    <div className="flex-1">
-                      <div className="flex justify-between text-sm mb-1">
-                        <span className="font-medium text-gray-800 truncate">{p.name}</span>
-                        <span className="text-primary-500 font-bold flex-shrink-0 ml-2">{formatCurrency(p.revenue)}</span>
-                      </div>
-                      <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-primary-400 rounded-full"
-                          style={{ width: `${Math.round((p.revenue / topProducts[0].revenue) * 100)}%` }}
-                        />
-                      </div>
-                      <p className="text-xs text-gray-400 mt-0.5">{p.qty} unidades</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+      {/* Stats cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+        <div className="bg-white rounded-xl border border-gray-100 p-5">
+          <p className="text-sm text-gray-500">Faturamento</p>
+          <p className="text-2xl font-bold text-orange-500 mt-1">{formatCurrency(totalRevenue)}</p>
         </div>
-      )}
+        <div className="bg-white rounded-xl border border-gray-100 p-5">
+          <p className="text-sm text-gray-500">Total de Pedidos</p>
+          <p className="text-2xl font-bold text-gray-900 mt-1">{totalOrders}</p>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-100 p-5">
+          <p className="text-sm text-gray-500">Pedidos Finalizados</p>
+          <p className="text-2xl font-bold text-green-600 mt-1">{doneOrders}</p>
+        </div>
+      </div>
+
+      {/* Top products */}
+      <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-100">
+          <h3 className="font-bold text-gray-900">Produtos mais vendidos</h3>
+        </div>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-100 text-left">
+              <th className="px-4 py-3 font-medium text-gray-500">#</th>
+              <th className="px-4 py-3 font-medium text-gray-500">Produto</th>
+              <th className="px-4 py-3 font-medium text-gray-500">Qtd</th>
+              <th className="px-4 py-3 font-medium text-gray-500">Receita</th>
+            </tr>
+          </thead>
+          <tbody>
+            {topProducts.map((p, i) => (
+              <tr key={p.product_name} className="border-b border-gray-50">
+                <td className="px-4 py-3 text-gray-400">{i + 1}</td>
+                <td className="px-4 py-3 font-medium">{p.product_name}</td>
+                <td className="px-4 py-3">{p.total_quantity}</td>
+                <td className="px-4 py-3 font-medium text-orange-500">{formatCurrency(p.total_revenue)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {topProducts.length === 0 && (
+          <div className="text-center py-10 text-gray-400">Nenhuma venda no periodo</div>
+        )}
+      </div>
     </div>
-  );
+  )
 }

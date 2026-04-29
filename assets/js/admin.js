@@ -15,12 +15,33 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 // ---------- ACCESS ----------
 async function guard() {
-  A.user = await getCurrentUser();
-  if (!A.user) { showLogin(); return; }
-  const ok = await isAdmin();
-  if (!ok) { showLogin('Você não tem permissão de admin. Faça login com uma conta administradora.'); return; }
+  const { data: { session } } = await sb.auth.getSession();
+
+  if (!session) {
+    showLogin();
+    return;
+  }
+
+  const { data: userData, error: userError } = await sb.auth.getUser();
+
+  if (userError || !userData?.user) {
+    showLogin('Sessão inválida. Faça login novamente.');
+    return;
+  }
+
+  A.user = userData.user;
+
+  const ok = await validarAdmin(A.user.id);
+
+  if (!ok) {
+    await sb.auth.signOut();
+    showLogin('Você não tem permissão de admin. Faça login com uma conta administradora.');
+    return;
+  }
+
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('admin-app').classList.remove('hidden');
+
   await loadAll();
   goto('dashboard');
 }
@@ -28,18 +49,62 @@ async function guard() {
 function showLogin(msg) {
   document.getElementById('admin-app').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
-  if (msg) { const a = document.getElementById('login-alert'); a.textContent = msg; a.classList.remove('hidden'); }
+
+  const a = document.getElementById('login-alert');
+  if (a) {
+    a.textContent = msg || '';
+    if (msg) a.classList.remove('hidden');
+    else a.classList.add('hidden');
+  }
 }
 
 async function adminLogin(e) {
   e.preventDefault();
-  const email = document.getElementById('al-email').value;
-  const pwd   = document.getElementById('al-pwd').value;
-  const { error } = await sb.auth.signInWithPassword({ email, password: pwd });
-  if (error) { document.getElementById('login-alert').textContent = error.message; document.getElementById('login-alert').classList.remove('hidden'); return; }
+
+  const email = document.getElementById('al-email').value.trim();
+  const pwd = document.getElementById('al-pwd').value;
+
+  const alertBox = document.getElementById('login-alert');
+  if (alertBox) {
+    alertBox.textContent = '';
+    alertBox.classList.add('hidden');
+  }
+
+  const { error } = await sb.auth.signInWithPassword({
+    email,
+    password: pwd
+  });
+
+  if (error) {
+    showLogin('Email ou senha inválidos.');
+    return;
+  }
+
   await guard();
 }
-async function adminLogout() { await sb.auth.signOut(); location.reload(); }
+
+async function validarAdmin(userId) {
+  const { data: roles, error } = await sb
+    .from('user_roles')
+    .select('role')
+    .eq('user_id', userId);
+
+  if (error) {
+    console.error('Erro ao validar admin:', error);
+    showLogin('Não foi possível validar o admin. Confira a tabela user_roles e as políticas RLS.');
+    return false;
+  }
+
+  console.log('ROLES DO USUÁRIO:', roles);
+
+  return roles?.some(r => r.role === 'admin');
+}
+
+async function adminLogout(e) {
+  if (e) e.preventDefault();
+  await sb.auth.signOut();
+  location.reload();
+}
 
 // ---------- LOADERS ----------
 async function loadAll() {

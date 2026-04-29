@@ -1,3 +1,22 @@
+// =====================================================================
+// admin.js — Painel administrativo
+// =====================================================================
+
+const A = {
+  user: null,
+  view: 'dashboard',
+  categories: [],
+  products: [],
+  zones: [],
+  orders: [],
+  settings: {},
+};
+
+window.addEventListener('DOMContentLoaded', async () => {
+  bindUI();
+  await guard();
+});
+
 // ---------- ACCESS ----------
 async function guard() {
   const { data: { session } } = await sb.auth.getSession();
@@ -7,16 +26,16 @@ async function guard() {
     return;
   }
 
-  const { data: userData, error: userError } = await sb.auth.getUser();
+  const { data: { user }, error: userError } = await sb.auth.getUser();
 
-  if (userError || !userData?.user) {
+  if (userError || !user) {
     showLogin('Sessão inválida. Faça login novamente.');
     return;
   }
 
-  A.user = userData.user;
+  A.user = user;
 
-  const ok = await validarAdmin(A.user.id);
+  const ok = await validarAdmin(user.id);
 
   if (!ok) {
     await sb.auth.signOut();
@@ -32,8 +51,8 @@ async function guard() {
 }
 
 function showLogin(msg) {
-  document.getElementById('admin-app').classList.add('hidden');
-  document.getElementById('login-screen').classList.remove('hidden');
+  document.getElementById('admin-app')?.classList.add('hidden');
+  document.getElementById('login-screen')?.classList.remove('hidden');
 
   const a = document.getElementById('login-alert');
   if (a) {
@@ -49,10 +68,13 @@ async function adminLogin(e) {
   const email = document.getElementById('al-email').value.trim();
   const pwd = document.getElementById('al-pwd').value;
 
-  const { error } = await sb.auth.signInWithPassword({
+  const { data, error } = await sb.auth.signInWithPassword({
     email,
     password: pwd
   });
+
+  console.log('LOGIN DATA:', data);
+  console.log('LOGIN ERROR:', error);
 
   if (error) {
     showLogin('Email ou senha inválidos.');
@@ -84,3 +106,75 @@ async function adminLogout(e) {
   await sb.auth.signOut();
   location.reload();
 }
+
+// ---------- LOADERS ----------
+async function loadAll() {
+  await Promise.all([
+    loadCats(),
+    loadProds(),
+    loadZones(),
+    loadOrders(),
+    loadSets()
+  ]);
+}
+
+async function loadCats() {
+  const { data, error } = await sb
+    .from('categories')
+    .select('*')
+    .order('sort_order');
+
+  if (error) console.error('Erro categorias:', error);
+  A.categories = data || [];
+}
+
+async function loadProds() {
+  const { data, error } = await sb
+    .from('products')
+    .select('*, categories(name)')
+    .order('name');
+
+  if (error) console.error('Erro produtos:', error);
+  A.products = data || [];
+}
+
+async function loadZones() {
+  const { data, error } = await sb
+    .from('delivery_zones')
+    .select('*')
+    .order('bairro');
+
+  if (error) console.error('Erro bairros:', error);
+  A.zones = data || [];
+}
+
+async function loadOrders() {
+  const { data, error } = await sb
+    .from('orders')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(200);
+
+  if (error) console.error('Erro pedidos:', error);
+  A.orders = data || [];
+}
+
+async function loadSets() {
+  const { data, error } = await sb
+    .from('settings')
+    .select('*');
+
+  if (error) console.error('Erro settings:', error);
+
+  A.settings = {};
+  (data || []).forEach(r => {
+    A.settings[r.key] = r.value;
+  });
+}
+
+// ---------- ROUTING ----------
+function goto(view) {
+  A.view = view;
+
+  document.querySelectorAll('.admin-nav a').forEach(a => {
+   

@@ -12,17 +12,15 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     autoRefreshToken: true,
     detectSessionInUrl: true,
     storage: window.localStorage,
-    storageKey: 'whiskeria-royal-auth'
+    storageKey: 'whiskeria-auth'
   }
 });
 
-// ---------- DEBUG DE LOGIN ----------
 sb.auth.onAuthStateChange((event, session) => {
   console.log('🔐 AUTH EVENT:', event);
   console.log('👤 SESSION:', session);
 });
 
-// ---------- Utilidades ----------
 const fmtBRL = v => 'R$ ' + Number(v || 0).toFixed(2).replace('.', ',');
 
 function toast(msg, type = '') {
@@ -44,10 +42,11 @@ function toast(msg, type = '') {
 }
 
 async function getCurrentUser() {
-  const {
-    data: { user },
-    error
-  } = await sb.auth.getUser();
+  const { data: { session } } = await sb.auth.getSession();
+
+  if (!session) return null;
+
+  const { data: { user }, error } = await sb.auth.getUser();
 
   if (error) {
     console.error('Erro getCurrentUser:', error);
@@ -60,10 +59,7 @@ async function getCurrentUser() {
 async function isAdmin() {
   const user = await getCurrentUser();
 
-  if (!user) {
-    console.warn('Nenhum usuário logado para validar admin.');
-    return false;
-  }
+  if (!user) return false;
 
   const { data, error } = await sb.rpc('has_role', {
     _user_id: user.id,
@@ -71,11 +67,9 @@ async function isAdmin() {
   });
 
   if (error) {
-    console.error('Erro ao validar admin via RPC has_role:', error);
+    console.error('Erro ao validar admin:', error);
     return false;
   }
-
-  console.log('✅ ADMIN VALIDADO:', data);
 
   return data === true;
 }
